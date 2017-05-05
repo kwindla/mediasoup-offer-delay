@@ -20,7 +20,11 @@ The flag `--chrome-freeze` triggers a code path that allows you to
 adjust (in the code) the timing of the offer send (or anything else in
 the `createOffer()` send sequence) for each individual client.
 
-At the moment with `--chrome-freeze` set, the test code does the following:
+That block of code is here:
+
+  https://github.com/kwindla/mediasoup-offer-delay/blob/master/soup-server.js#L194
+
+At the moment (commit 5ad270ab4b19838b) with `--chrome-freeze` set, the test code does the following:
 
 1. Client A joins the room. We delay sending the offer by 1s.
 2. Client B joins the room. We delay sending the offer to B for 1s. After offer/answer exchange with B, onnegotiationneeded fires for Client A. We delay sending the new offer to A by one second. Offer/answer exchange completes and video streams play fine in both clients.
