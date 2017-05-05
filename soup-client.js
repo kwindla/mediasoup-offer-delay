@@ -19,9 +19,12 @@ let config = queryString.parse(window.location.search.substring(1)),
 
 window.main = async function() {
   console.log('test client configuration', config);
+  window.rtc = rtc;
+  window.remoteStreams = remoteStreams;
+  window.localStream = localStream;
   if (config.autojoin) {
     console.log('autojoining');
-    window.join();
+    window.start();
   }
 }
 
