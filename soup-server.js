@@ -14,7 +14,8 @@ const cmdLineOpts = cmdLineArgs([
   { name: 'ip', type: String },
   { name: 'repl', type: Boolean },
   { name: 'pause-on-start', type: Boolean },
-  { name: 'send-offer-delay', type: Number } // milliseconds
+  { name: 'send-offer-delay', type: Number }, // milliseconds
+  { name: 'chrome-freeze', type: Boolean }
 ]);
 
 const serverOpts = {
@@ -51,6 +52,12 @@ const RTCPeerConnection = mediasoup.webrtc.RTCPeerConnection;
 let participants = {},
     sfu,
     soupRoom;
+
+if (cmdLineOpts['send-offer-delay'] > 0 &&
+    cmdLineOpts['chrome-freeze']) {
+  console.error('please provide only one of --send-offer-delay or --chrome-freeze');
+  process.exit(1);
+}
 
 // setup websocket for test signaling
 const wss = new WebSocket.Server({ port: 8123 });
@@ -133,8 +140,10 @@ async function handleParticipant (webSock, msg) {
       usePlanB: usePlanB,
     });
     let joinTs = Date.now();
-    participants[msg.peerId] = { webSock, mediaPeer, peerConnection, joinTs }
-    console.log('setting capabilties for', msg.peerId);
+    let joinSeqNum = Object.keys(participants).length;
+    participants[msg.peerId] = { webSock, mediaPeer, peerConnection,
+                                 joinTs, joinSeqNum };
+    console.log('setting capabilties for', msg.peerId, joinSeqNum);
     await peerConnection.setCapabilities(msg.capabilities);
     sendSdpOffer(msg.peerId);
     peerConnection.on('negotiationneeded', () => {
@@ -169,10 +178,53 @@ async function sendSdpOffer (peerId) {
     return;
   }
   try {
+    // INTRODUCE ARTIFICIAL DELAY TO ISOLATE CHROME BUG
+    // Two ways of doing this.
+    // 1. --send-offer-delay / g.sendOfferDelay specifies a global
+    // delay in ms. A delay of approximately 1,000ms or more triggers
+    // stream B->A freezing in Chrome when client C joins.
+    // 2. Alternatively, --chrome-freeze treats each connection
+    // uniquely. Setting delay for the second and third peer that
+    // join, and only doing the create offer, not the send, for the
+    // third peer.
+    let peersCnt = Object.keys(participants).length,
+        delay = 0;
+    if (g.sendOfferDelay) {
+      delay = g.sendOfferDelay;
+    } else if (cmdLineOpts['chrome-freeze']) {
+      if (peersCnt === 1) {
+        console.log('sending initial offer to Client A');
+        delay = 1000;
+      } else if (peersCnt === 2) {
+        if (pr.joinSeqNum === 0) {
+          console.log('sending renegotiation offer to Client A');
+          delay = 1000;
+        } else if (pr.joinSeqNum === 1) {
+          console.log('sending initial offer to Client B');
+          delay = 1000;
+        }
+      } else if (peersCnt === 3) {
+        if (pr.joinSeqNum === 0) {
+          console.log('doing createOffer for Client A, but *not* sending sdp');
+          let desc = await pr.peerConnection.createOffer({
+            offerToReceiveAudio: 1,
+            offerToReceiveVideo: 1
+          });
+          return;
+        } else if (pr.joinSeqNum === 1) {
+          console.log('sending renegotiation offer to Client B');
+          delay = 0;
+        } else if (pr.joinSeqNum === 2) {
+          console.log('sending initial offer to Client C');
+          delay = 0;
+        }
+      }
+    }
+
     let desc = await pr.peerConnection.createOffer({
       offerToReceiveAudio: 1,
       offerToReceiveVideo: 1
-    })
+    });
     await pr.peerConnection.setLocalDescription(desc);
     let sdp = pr.peerConnection.localDescription.sdp;
     // warn about problematic SDPs from Microsoft Edge
@@ -180,17 +232,16 @@ async function sendSdpOffer (peerId) {
       console.log(`warn broken offer sdp for ${peerId}`);
       console.log(sdp);
     }
-    // INTRODUCE ARTIFICIAL DELAY TO ISOLATE CHROME BUG
-    if (g.sendOfferDelay > 0) {
-      console.log(`delaying send offer to ${peerId} by ${g.sendOfferDelay}ms`);
-    }
+    if (delay > 0) {
+      console.log(`delaying send offer to ${peerId} by ${delay}ms`);
+    }    
     setTimeout(() => {
       pr.webSock.send(JSON.stringify(
         { tag: 'offer',
           sendVideo: true,
           sdp: pr.peerConnection.localDescription.serialize()
         }));
-    }, g.sendOfferDelay || 0);
+    }, delay);
   } catch (e) {
     console.error(e);
     pr.peerConnection.reset();
